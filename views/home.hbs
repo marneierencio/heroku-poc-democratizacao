@@ -47,6 +47,7 @@
             <h2>{{name}}</h2>
             <a href="{{downloadLink}}">Baixar CSV</a>
             <a href="{{viewLink}}">Visualizar Dados</a>
+            <a href="/delete/{{this}}" onclick="return confirm('Tem certeza que deseja excluir o arquivo {{this}}?')">Excluir CSV</a>
         </div>
         {{/each}}
     </div>

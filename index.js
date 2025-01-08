@@ -157,6 +157,19 @@ app.post('/receive-data', async (req, res) => {
     }
 });
 
+// Endpoint para excluir um arquivo CSV
+app.get('/delete/:objectName', (req, res) => {
+    const objectName = req.params.objectName;
+    const filePath = path.join(CSV_FOLDER, `${objectName}.csv`);
+
+    if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+        res.send(`Arquivo ${objectName}.csv excluído com sucesso.`);
+    } else {
+        res.status(404).send(`Arquivo ${objectName}.csv não encontrado.`);
+    }
+});
+
 // Inicialização do servidor
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
