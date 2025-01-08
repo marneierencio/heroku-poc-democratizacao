@@ -18,70 +18,75 @@ const CSV_FOLDER = path.join(__dirname, 'csv_files');
 // Cria a pasta se não existir
 fs.ensureDirSync(CSV_FOLDER);
 
-// Helper para salvar registros em CSV
-async function saveToCSV(data) {
-    const objectName = data.objectName;
-    const csvFilePath = path.join(CSV_FOLDER, `${objectName}.csv`);
-
-    const records = data.records; // Assumindo que `records` contém uma lista de objetos
-    if (!records || records.length === 0) {
-        return; // Nada a salvar
-    }
-
-    // Identifica os campos presentes nos novos registros
-    const newFields = Object.keys(records[0]);
-
-    // Verifica se o arquivo CSV já existe
+// Função para atualizar ou criar o arquivo CSV
+async function updateCSVFile(objectName, records) {
+    const filePath = path.join(CSV_FOLDER, `${objectName}.csv`);
     let existingHeaders = [];
-    if (fs.existsSync(csvFilePath)) {
-        const fileContent = fs.readFileSync(csvFilePath, 'utf8');
-        existingHeaders = fileContent.split('\n')[0].split(',');
+    let existingData = [];
+
+    // Ler o arquivo existente, se ele já existir
+    if (fs.existsSync(filePath)) {
+        const csvData = fs.readFileSync(filePath, 'utf8').split('\n');
+        existingHeaders = csvData[0].split(',');
+        existingData = csvData.slice(1).filter((line) => line.trim());
     }
 
-    // Atualiza os cabeçalhos (se necessário)
-    const allHeaders = Array.from(new Set([...existingHeaders, ...newFields]));
+    // Montar o novo conjunto de cabeçalhos
+    const newHeaders = new Set(existingHeaders);
 
-    // Lê os registros existentes, se o arquivo já existir
-    let existingRecords = [];
-    if (existingHeaders.length > 0) {
-        const lines = fs.readFileSync(csvFilePath, 'utf8').split('\n');
-        lines.slice(1).forEach((line) => {
-            if (line.trim()) {
-                const values = line.split(',');
-                const record = {};
-                existingHeaders.forEach((header, index) => {
-                    record[header] = values[index] || '';
-                });
-                existingRecords.push(record);
-            }
+    records.forEach((record) => {
+        const data = JSON.parse(record.data || '{}');
+        Object.keys(data).forEach((key) => {
+            newHeaders.add(key);
         });
-    }
-
-    // Concatena os novos registros com os existentes e ordena por `dateTimeRecord`
-    const allRecords = [...existingRecords, ...records].sort(
-        (a, b) => new Date(a.dateTimeRecord) - new Date(b.dateTimeRecord)
-    );
-
-    // Adiciona marcadores para campos faltantes nos registros existentes
-    const formattedRecords = allRecords.map((record) => {
-        const formattedRecord = {};
-        allHeaders.forEach((header) => {
-            formattedRecord[header] = record[header] || ''; // Preenche com string vazia se faltar o campo
-        });
-        return formattedRecord;
     });
 
-    // Salva no CSV
-    const csvContent =
-        allHeaders.join(',') +
-        '\n' +
-        formattedRecords
-            .map((record) =>
-                allHeaders.map((header) => JSON.stringify(record[header] || '')).join(',')
-            )
-            .join('\n');
+    const allHeaders = Array.from(newHeaders);
 
-    fs.writeFileSync(csvFilePath, csvContent, 'utf8');
+    // Atualizar linhas existentes para incluir novas colunas
+    const updatedData = existingData.map((line) => {
+        const values = line.split(',');
+        const row = {};
+        existingHeaders.forEach((header, index) => {
+            row[header] = values[index] || '';
+        });
+
+        // Adicionar colunas ausentes com valores em branco
+        allHeaders.forEach((header) => {
+            if (!row[header]) {
+                row[header] = '';
+            }
+        });
+
+        return allHeaders.map((header) => row[header]).join(',');
+    });
+
+    // Adicionar os novos registros
+    records.forEach((record) => {
+        const row = {};
+        allHeaders.forEach((header) => {
+            if (header === 'recordId') row[header] = record.recordId || '';
+            else if (header === 'parentRecordId') row[header] = record.parentRecordId || '';
+            else if (header === 'dateTimeRecord') row[header] = record.dateTimeRecord || '';
+            else {
+                const data = JSON.parse(record.data || '{}');
+                row[header] = data[header] || '';
+            }
+        });
+
+        updatedData.push(allHeaders.map((header) => row[header]).join(','));
+    });
+
+    // Ordenar os registros pelo campo `dateTimeRecord`
+    updatedData.sort((a, b) => {
+        const dateA = new Date(a.split(',')[allHeaders.indexOf('dateTimeRecord')]);
+        const dateB = new Date(b.split(',')[allHeaders.indexOf('dateTimeRecord')]);
+        return dateA - dateB;
+    });
+
+    // Salvar no arquivo CSV
+    const csvContent = [allHeaders.join(','), ...updatedData].join('\n');
+    fs.writeFileSync(filePath, csvContent);
 }
 
 // Página inicial
@@ -121,20 +126,34 @@ app.get('/view/:fileName', async (req, res) => {
     }
 });
 
-// Endpoint para receber dados
+// Endpoint para receber os dados do Salesforce
 app.post('/receive-data', async (req, res) => {
+    const records = req.body;
+
+    if (!Array.isArray(records)) {
+        return res.status(400).send('O payload deve ser um array.');
+    }
+
+    // Organizar os registros por `objectName`
+    const groupedRecords = records.reduce((acc, record) => {
+        const objectName = record.objectName;
+        if (!acc[objectName]) {
+            acc[objectName] = [];
+        }
+        acc[objectName].push(record);
+        return acc;
+    }, {});
+
     try {
-        const payload = req.body;
-        if (!payload || !payload.objectName || !payload.records) {
-            return res.status(400).send({ error: 'Payload inválido.' });
+        // Atualizar os arquivos CSV para cada objeto
+        for (const [objectName, objectRecords] of Object.entries(groupedRecords)) {
+            await updateCSVFile(objectName, objectRecords);
         }
 
-        await saveToCSV(payload);
-
-        res.status(200).send({ message: 'Dados salvos com sucesso.' });
-    } catch (err) {
-        console.error('Erro ao salvar dados:', err);
-        res.status(500).send({ error: 'Erro interno ao processar os dados.' });
+        res.status(200).send('Dados processados com sucesso.');
+    } catch (error) {
+        console.error('Erro ao processar os dados:', error);
+        res.status(500).send('Erro ao processar os dados.');
     }
 });
 
